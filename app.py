@@ -1904,6 +1904,8 @@ def register_face_frame():
         data = request.get_json(silent=True) or {}
         token = data.get("token", "")
         image_data = data.get("image", "")
+        step = int(data.get("step", 1))
+        action = data.get("action", "steady")
 
         if not token or not image_data:
             return jsonify(
@@ -1929,6 +1931,8 @@ def register_face_frame():
                     "best_face": None,
                     "best_sharpness": -1.0,  # track sharpness to pick best crop
                     "started": time.time(),
+                    "baseline_cy": None,
+                    "poses": [],
                 }
 
             sess = reg_sessions[token]
@@ -1961,6 +1965,11 @@ def register_face_frame():
                     }
                 )
 
+            # ── Head-motion pose tracking ───────────────────────────────────
+            cy = y + h // 2
+            if sess.get("baseline_cy") is None:
+                sess["baseline_cy"] = cy
+
             # ── Extract embedding ───────────────────────────────────────────
             try:
                 emb = extract_embedding(img, x, y, w, h)
@@ -1986,16 +1995,24 @@ def register_face_frame():
                 sess["best_face"] = crop_160
 
             sess["embeddings"].append(emb)
+            sess["poses"].append({"step": step, "action": action, "cy": cy})
             captured = len(sess["embeddings"])
 
             step_msgs = {
-                1: "Frame 1 captured — hold steady",
-                2: "Frame 2 captured — almost done",
-                3: "Face capture complete",
+                1: "Step 1 of 4: Steady position captured ✓",
+                2: "Step 2 of 4: Upward tilt captured ✓",
+                3: "Step 3 of 4: Downward tilt captured ✓",
+                4: "Step 4 of 4: Head motion scan complete ✓",
             }
-            msg = step_msgs.get(captured, f"Frame {captured} captured")
+            msg = step_msgs.get(captured, f"Step {captured} captured ✓")
 
-            return jsonify({"success": True, "message": msg, "captured": captured})
+            return jsonify({
+                "success": True,
+                "message": msg,
+                "captured": captured,
+                "step": step,
+                "action": action,
+            })
 
         finally:
             # ── Always release the lock, even on error ──────────────────────
@@ -2035,9 +2052,9 @@ def commit_face_registration():
     if not sess:
         return jsonify({"success": False, "message": "Registration session not found"})
 
-    if len(sess["embeddings"]) < 2:
+    if len(sess["embeddings"]) < 3:
         return jsonify(
-            {"success": False, "message": "Not enough frames captured (need ≥ 2)"}
+            {"success": False, "message": "Not enough frames captured (need ≥ 3 of 4)"}
         )
 
     if sess["best_face"] is None:
